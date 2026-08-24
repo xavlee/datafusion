@@ -31,7 +31,7 @@
 #
 # Improvement opportunity:
 # date_bin(60s) is monotonic in timestamp and the hour split is aligned to bin
-# boundaries, so (key, time_bin) is partition-disjoint. Aggregation could be a
+# boundaries, so (key, time_bin) is group-contiguous. Aggregation could be a
 # single streaming SinglePartitioned step with no hash shuffle.
 #
 # Today's plan still hash-repartitions:

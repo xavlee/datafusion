@@ -80,7 +80,7 @@ impl OrderedAggregateTableMetrics {
 /// The table consumes input batches while `GroupOrdering` tracks which groups
 /// are proven complete. Completed groups can be emitted before the input stream
 /// ends, which keeps memory bounded by the active key range. The guarantee can
-/// come from physical sort order or from partition-disjoint group keys.
+/// come from physical sort order or from group-contiguous expressions.
 ///
 /// # Single, partial and final variant difference
 ///

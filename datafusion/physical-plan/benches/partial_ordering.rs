@@ -78,10 +78,10 @@ fn aggregate_schema() -> SchemaRef {
     ]))
 }
 
-/// Build locally key-ordered logical runs whose key ranges are disjoint. The
-/// runs are concatenated in descending range order so the resulting stream is
+/// Build non-overlapping logical runs that are locally ordered by key. The runs
+/// are concatenated in descending range order so the resulting stream is
 /// intentionally not globally sorted.
-fn partition_disjoint_batches(schema: &SchemaRef) -> Vec<RecordBatch> {
+fn non_overlapping_run_batches(schema: &SchemaRef) -> Vec<RecordBatch> {
     (0..LOGICAL_RUNS)
         .map(|run| {
             let key_offset = (LOGICAL_RUNS - run - 1) * GROUPS_PER_RUN;
@@ -100,14 +100,14 @@ fn partition_disjoint_batches(schema: &SchemaRef) -> Vec<RecordBatch> {
         .collect()
 }
 
-fn aggregate_plan(partition_disjoint: bool) -> Arc<dyn ExecutionPlan> {
+fn aggregate_plan(group_contiguous: bool) -> Arc<dyn ExecutionPlan> {
     let schema = aggregate_schema();
-    let batches = partition_disjoint_batches(&schema);
+    let batches = non_overlapping_run_batches(&schema);
     let input = TestMemoryExec::try_new(&[batches], Arc::clone(&schema), None).unwrap();
-    let input: Arc<dyn ExecutionPlan> = if partition_disjoint {
+    let input: Arc<dyn ExecutionPlan> = if group_contiguous {
         Arc::new(
             input
-                .try_with_group_contiguous_keys(vec![col("key", &schema).unwrap()])
+                .try_with_group_contiguous_exprs(vec![col("key", &schema).unwrap()])
                 .unwrap(),
         )
     } else {
@@ -138,7 +138,7 @@ fn aggregate_plan(partition_disjoint: bool) -> Arc<dyn ExecutionPlan> {
     )
 }
 
-fn bench_partition_disjoint_aggregate(c: &mut Criterion) {
+fn bench_group_contiguous_aggregate(c: &mut Criterion) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let task_ctx = Arc::new(
         TaskContext::default().with_session_config(
@@ -147,13 +147,13 @@ fn bench_partition_disjoint_aggregate(c: &mut Criterion) {
                 .set_bool("datafusion.execution.enable_migration_aggregate", true),
         ),
     );
-    let mut group = c.benchmark_group("partition_disjoint_aggregate");
+    let mut group = c.benchmark_group("group_contiguous_aggregate");
 
-    for (name, partition_disjoint) in [
+    for (name, group_contiguous) in [
         ("unordered_hash", false),
-        ("partition_disjoint_streaming", true),
+        ("group_contiguous_streaming", true),
     ] {
-        let plan = aggregate_plan(partition_disjoint);
+        let plan = aggregate_plan(group_contiguous);
         group.bench_function(name, |b| {
             b.iter(|| {
                 let batches = runtime
@@ -170,9 +170,5 @@ fn bench_partition_disjoint_aggregate(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    bench_new_groups,
-    bench_partition_disjoint_aggregate
-);
+criterion_group!(benches, bench_new_groups, bench_group_contiguous_aggregate);
 criterion_main!(benches);

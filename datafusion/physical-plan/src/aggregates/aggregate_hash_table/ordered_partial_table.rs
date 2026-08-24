@@ -22,7 +22,7 @@
 //! This operator handles input whose group-completion keys are contiguous:
 //! - Fully ordered: `GROUP BY a, b`, input is `ORDER BY a, b`
 //! - Partially ordered: `GROUP BY a, b`, input is `ORDER BY a`
-//! - Partition-disjoint: logical source runs may reset key order, but completed
+//! - Group-contiguous: logical source runs may reset key order, but completed
 //!   key tuples never recur in the same output stream
 //!
 //! When a group key combination is exhausted, this table eagerly flushes the

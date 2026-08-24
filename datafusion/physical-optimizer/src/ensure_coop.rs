@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cooperative_exec_preserves_partition_disjoint_aggregation() -> Result<()> {
+    fn test_cooperative_exec_preserves_group_contiguous_aggregation() -> Result<()> {
         use arrow::datatypes::{DataType, Field, Schema};
         use datafusion_physical_expr::expressions::col;
         use datafusion_physical_plan::ExecutionPlanProperties;
@@ -166,7 +166,7 @@ mod tests {
         let schema =
             Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
         let input = TestMemoryExec::try_new(&[vec![]], Arc::clone(&schema), None)?
-            .try_with_group_contiguous_keys(vec![col("key", &schema)?])?;
+            .try_with_group_contiguous_exprs(vec![col("key", &schema)?])?;
         let aggregate = Arc::new(AggregateExec::try_new(
             AggregateMode::Partial,
             PhysicalGroupBy::new_single(vec![(col("key", &schema)?, "key".to_string())]),

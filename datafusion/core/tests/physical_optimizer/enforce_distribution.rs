@@ -2619,10 +2619,10 @@ fn added_repartition_to_single_partition() -> Result<()> {
 }
 
 #[test]
-fn partition_disjoint_aggregate_preserves_source_partitioning() -> Result<()> {
+fn group_contiguous_aggregate_preserves_source_partitioning() -> Result<()> {
     let schema = schema();
     let input = TestMemoryExec::try_new(&[vec![]], Arc::clone(&schema), None)?
-        .try_with_group_contiguous_keys(vec![col("a", &schema)?])?;
+        .try_with_group_contiguous_exprs(vec![col("a", &schema)?])?;
     let aggregate = Arc::new(AggregateExec::try_new(
         AggregateMode::Partial,
         PhysicalGroupBy::new_single(vec![(col("a", &schema)?, "a".to_string())]),

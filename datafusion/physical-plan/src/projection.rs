@@ -1535,7 +1535,7 @@ mod tests {
             &schema,
         )?;
         let plain_source = TestMemoryExec::try_new(&[vec![]], Arc::clone(&schema), None)?;
-        let source = plain_source.clone().try_with_group_contiguous_keys(vec![
+        let source = plain_source.clone().try_with_group_contiguous_exprs(vec![
             col("key", &schema)?,
             Arc::clone(&time_bin),
         ])?;

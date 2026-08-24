@@ -236,11 +236,10 @@ fn aggregations_with_group_combined() -> datafusion_common::Result<()> {
 }
 
 #[test]
-fn partition_disjoint_aggregation_combines_and_streams() -> datafusion_common::Result<()>
-{
+fn group_contiguous_aggregation_combines_and_streams() -> datafusion_common::Result<()> {
     let schema = schema();
     let source = TestMemoryExec::try_new(&[vec![]], Arc::clone(&schema), None)?
-        .try_with_group_contiguous_keys(vec![col("c", &schema)?])?;
+        .try_with_group_contiguous_exprs(vec![col("c", &schema)?])?;
     let aggr_expr = vec![Arc::new(
         AggregateExprBuilder::new(sum_udaf(), vec![col("b", &schema)?])
             .schema(Arc::clone(&schema))

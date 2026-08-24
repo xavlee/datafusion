@@ -69,7 +69,7 @@ use crate::{InputOrderMode, RecordBatchStream, SendableRecordBatchStream};
 /// After each input batch, check whether any groups can be emitted eagerly to
 /// improve memory efficiency. Once a new contiguous key range begins, the prior
 /// range is safe to emit. The guarantee may come from sort order or from
-/// partition-disjoint source keys.
+/// group-contiguous source expressions.
 ///
 /// # Memory Pressure and Spilling
 ///

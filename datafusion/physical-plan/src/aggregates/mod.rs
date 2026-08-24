@@ -890,14 +890,14 @@ pub struct AggregateExec {
     dynamic_filter: Option<Arc<AggrDynFilter>>,
 }
 
-/// Returns the group-completion mode established by a partition-disjoint key.
+/// Returns the group-completion mode established by a group-contiguous key.
 ///
-/// If the complete disjoint key is present in `groupby_exprs`, each key value
+/// If the complete contiguous key is present in `groupby_exprs`, each key value
 /// identifies one contiguous range of input rows. An exact match establishes
-/// full group completion. If the aggregate has additional keys, the disjoint
+/// full group completion. If the aggregate has additional keys, the contiguous
 /// key establishes partial group completion: all groups in the prior key range
 /// can be emitted together.
-fn group_completion_from_partition_disjointness(
+fn group_completion_from_contiguous_exprs(
     eq_properties: &EquivalenceProperties,
     groupby_exprs: &[Arc<dyn PhysicalExpr>],
     group_contiguous_exprs: &[Arc<dyn PhysicalExpr>],
@@ -926,6 +926,44 @@ fn group_completion_from_partition_disjointness(
         Some(GroupCompletionMode::Full)
     } else {
         Some(GroupCompletionMode::Partial(indices))
+    }
+}
+
+/// Combines independent group-completion guarantees.
+///
+/// A tuple identified by both guarantees is the intersection of their
+/// contiguous input ranges and is therefore also contiguous. Consequently,
+/// the union of two partial keys provides a stronger completion key.
+fn combine_group_completion_modes(
+    ordering_mode: GroupCompletionMode,
+    contiguous_mode: Option<GroupCompletionMode>,
+    num_group_exprs: usize,
+) -> GroupCompletionMode {
+    let Some(contiguous_mode) = contiguous_mode else {
+        return ordering_mode;
+    };
+
+    match (ordering_mode, contiguous_mode) {
+        (GroupCompletionMode::Full, _) | (_, GroupCompletionMode::Full) => {
+            GroupCompletionMode::Full
+        }
+        (GroupCompletionMode::None, mode) | (mode, GroupCompletionMode::None) => mode,
+        (
+            GroupCompletionMode::Partial(mut ordering_indices),
+            GroupCompletionMode::Partial(contiguous_indices),
+        ) => {
+            for index in contiguous_indices {
+                if !ordering_indices.contains(&index) {
+                    ordering_indices.push(index);
+                }
+            }
+
+            if ordering_indices.len() == num_group_exprs {
+                GroupCompletionMode::Full
+            } else {
+                GroupCompletionMode::Partial(ordering_indices)
+            }
+        }
     }
 }
 
@@ -1087,19 +1125,21 @@ impl AggregateExec {
             input_order_mode = InputOrderMode::Linear;
         }
 
-        let group_completion_mode = if input_order_mode == InputOrderMode::Linear
-            && !group_by.has_grouping_set()
-            && group_by.is_single()
-        {
-            group_completion_from_partition_disjointness(
-                input_eq_properties,
-                &groupby_exprs,
-                input.group_contiguous_exprs(),
-            )
-            .unwrap_or(GroupCompletionMode::None)
-        } else {
-            GroupCompletionMode::from(&input_order_mode)
-        };
+        let contiguous_completion_mode =
+            if !group_by.has_grouping_set() && group_by.is_single() {
+                group_completion_from_contiguous_exprs(
+                    input_eq_properties,
+                    &groupby_exprs,
+                    input.group_contiguous_exprs(),
+                )
+            } else {
+                None
+            };
+        let group_completion_mode = combine_group_completion_modes(
+            GroupCompletionMode::from(&input_order_mode),
+            contiguous_completion_mode,
+            groupby_exprs.len(),
+        );
 
         // construct a map from the input expression to the output expression of the Aggregation group by
         let group_expr_mapping =
@@ -2437,7 +2477,7 @@ impl ExecutionPlan for AggregateExec {
             required_input_ordering: _,
             // Derived at construction from the input ordering and `group_by`.
             input_order_mode: _,
-            // Derived from input ordering or partition-disjoint source keys.
+            // Derived from input ordering or group-contiguous source expressions.
             group_completion_mode: _,
             // Derived at construction by `Self::compute_properties`.
             cache: _,
@@ -4728,7 +4768,7 @@ mod tests {
     }
 
     #[test]
-    fn partition_disjoint_composite_key_implication() -> Result<()> {
+    fn group_contiguous_composite_key_implication() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),
@@ -4740,7 +4780,7 @@ mod tests {
         // A contiguous `a` range lets an aggregate grouped by `(a, b)` emit
         // every completed `a` range, even if `b` is unordered inside it.
         assert_eq!(
-            group_completion_from_partition_disjointness(
+            group_completion_from_contiguous_exprs(
                 &eq_properties,
                 &[Arc::clone(&a), Arc::clone(&b)],
                 &[Arc::clone(&a)],
@@ -4748,10 +4788,10 @@ mod tests {
             Some(GroupCompletionMode::Partial(vec![0]))
         );
 
-        // Disjointness of `(a, b)` says nothing about whether `a` alone can
-        // recur in a later logical partition.
+        // Contiguity of `(a, b)` says nothing about whether `a` alone can recur
+        // in a later logical run.
         assert_eq!(
-            group_completion_from_partition_disjointness(
+            group_completion_from_contiguous_exprs(
                 &eq_properties,
                 &[Arc::clone(&a)],
                 &[Arc::clone(&a), Arc::clone(&b)],
@@ -4761,7 +4801,7 @@ mod tests {
 
         // Group-by key order is immaterial for an exact tuple match.
         assert_eq!(
-            group_completion_from_partition_disjointness(
+            group_completion_from_contiguous_exprs(
                 &eq_properties,
                 &[Arc::clone(&b), Arc::clone(&a)],
                 &[a, b],
@@ -4772,7 +4812,7 @@ mod tests {
         // The property is intentionally not a generic row-order property:
         // only ProjectionExec opts into propagation.
         let source = TestMemoryExec::try_new(&[vec![]], Arc::clone(&schema), None)?
-            .try_with_group_contiguous_keys(vec![col("a", &schema)?])?;
+            .try_with_group_contiguous_exprs(vec![col("a", &schema)?])?;
         let source: Arc<dyn ExecutionPlan> = Arc::new(source);
         let filter = FilterExecBuilder::new(lit(true), source).build()?;
         assert!(filter.group_contiguous_exprs().is_empty());
@@ -4780,8 +4820,43 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn group_completion_combines_ordering_and_contiguity() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ]));
+        let ordering =
+            LexOrdering::new([PhysicalSortExpr::new_default(col("a", &schema)?)])
+                .unwrap();
+        let input = TestMemoryExec::try_new(&[vec![]], Arc::clone(&schema), None)?
+            .try_with_sort_information(vec![ordering])?
+            .try_with_group_contiguous_exprs(vec![col("b", &schema)?])?;
+        let aggregate = AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::new_single(vec![
+                (col("a", &schema)?, "a".to_string()),
+                (col("b", &schema)?, "b".to_string()),
+            ]),
+            vec![],
+            vec![],
+            Arc::new(input),
+            schema,
+        )?;
+
+        assert_eq!(
+            aggregate.input_order_mode,
+            InputOrderMode::PartiallySorted(vec![0])
+        );
+        assert_eq!(aggregate.group_completion_mode, GroupCompletionMode::Full);
+        assert_eq!(aggregate.cache().emission_type, EmissionType::Incremental);
+        assert_eq!(aggregate.benefits_from_input_partitioning(), vec![false]);
+
+        Ok(())
+    }
+
     #[tokio::test]
-    async fn partition_disjoint_aggregate_emits_before_input_ends() -> Result<()> {
+    async fn group_contiguous_aggregate_emits_before_input_ends() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("key", DataType::Int32, false),
             Field::new("value", DataType::Int64, false),
@@ -4829,9 +4904,9 @@ mod tests {
         let first =
             tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
                 .await
-                .expect("partition-disjoint aggregate should emit before input ends")
+                .expect("group-contiguous aggregate should emit before input ends")
                 .transpose()?
-                .expect("partition-disjoint aggregate should emit one completed group");
+                .expect("group-contiguous aggregate should emit one completed group");
         assert_snapshot!(batches_to_sort_string(&[first]), @r"
 +-----+------------+
 | key | SUM(value) |
@@ -4897,7 +4972,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn partition_disjoint_aggregate_handles_order_resets() -> Result<()> {
+    async fn group_contiguous_aggregate_handles_order_resets() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("key", DataType::Int32, false),
             Field::new("value", DataType::Int64, false),
@@ -4921,7 +4996,7 @@ mod tests {
             )?,
         ];
         let input = TestMemoryExec::try_new(&[batches], Arc::clone(&schema), None)?
-            .try_with_group_contiguous_keys(vec![col("key", &schema)?])?;
+            .try_with_group_contiguous_exprs(vec![col("key", &schema)?])?;
         let group_by =
             PhysicalGroupBy::new_single(vec![(col("key", &schema)?, "key".to_string())]);
         let aggr_expr = vec![Arc::new(
@@ -4975,7 +5050,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn partition_disjoint_subset_uses_partial_group_ordering() -> Result<()> {
+    async fn group_contiguous_subset_uses_partial_group_ordering() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),
@@ -4992,7 +5067,7 @@ mod tests {
             ],
         )?;
         let input = TestMemoryExec::try_new(&[vec![batch]], Arc::clone(&schema), None)?
-            .try_with_group_contiguous_keys(vec![col("a", &schema)?])?;
+            .try_with_group_contiguous_exprs(vec![col("a", &schema)?])?;
         let group_by = PhysicalGroupBy::new_single(vec![
             (col("a", &schema)?, "a".to_string()),
             (col("b", &schema)?, "b".to_string()),
@@ -5036,7 +5111,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn partition_disjoint_derived_key_projects_to_aggregate() -> Result<()> {
+    async fn group_contiguous_derived_key_projects_to_aggregate() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("key", DataType::Int32, false),
             Field::new("time", DataType::Timestamp(TimeUnit::Second, None), false),
@@ -5072,7 +5147,7 @@ mod tests {
             Arc::new(ConfigOptions::default()),
         )?) as Arc<dyn PhysicalExpr>;
         let source = TestMemoryExec::try_new(&[batches], Arc::clone(&schema), None)?
-            .try_with_group_contiguous_keys(vec![
+            .try_with_group_contiguous_exprs(vec![
                 col("key", &schema)?,
                 Arc::clone(&time_bin),
             ])?;
@@ -7674,7 +7749,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn partition_disjoint_partial_completion_spills() -> Result<()> {
+    async fn group_contiguous_partial_completion_spills() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("completion_key", DataType::Int64, false),
             Field::new("group_key", DataType::Int64, false),
@@ -7691,7 +7766,7 @@ mod tests {
         )?;
         let input =
             TestMemoryExec::try_new(&[vec![batch]], Arc::clone(&schema), None)?
-                .try_with_group_contiguous_keys(vec![col("completion_key", &schema)?])?;
+                .try_with_group_contiguous_exprs(vec![col("completion_key", &schema)?])?;
         let aggregate = Arc::new(AggregateExec::try_new(
             AggregateMode::Single,
             PhysicalGroupBy::new_single(vec![

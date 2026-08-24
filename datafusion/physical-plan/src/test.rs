@@ -381,7 +381,7 @@ impl TestMemoryExec {
     /// Attach a composite key whose values occur in one contiguous range in
     /// each output stream. See [`ExecutionPlan::group_contiguous_exprs`] for
     /// the correctness contract.
-    pub fn try_with_group_contiguous_keys(
+    pub fn try_with_group_contiguous_exprs(
         mut self,
         mut group_contiguous_exprs: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Self> {

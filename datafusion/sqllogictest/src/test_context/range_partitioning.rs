@@ -345,7 +345,7 @@ type TimeBinRow = (
 ///
 /// Files are range-partitioned on `timestamp` and sorted on `(key, timestamp)`.
 /// Because `date_bin(60 seconds, timestamp)` does not straddle the hour split,
-/// grouping by `(key, time_bin)` is partition-disjoint. Today's planner still
+/// grouping by `(key, time_bin)` is group-contiguous. Today's planner still
 /// inserts a hash shuffle; the test pins that plan so a follow-up can remove it.
 pub(super) fn register_range_sorted_time_bin_table(ctx: &SessionContext) {
     let schema = Arc::new(Schema::new(vec![
